@@ -1,0 +1,13 @@
+[package]
+name = "ch32v003-ili9341"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+panic-halt = "0.2"
+semihosting = { version = "0.1", features = ["stdio"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
