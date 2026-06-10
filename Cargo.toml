@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+riscv-rt = "0.14"
 panic-halt = "0.2"
 semihosting = { version = "0.1", features = ["stdio"] }
 

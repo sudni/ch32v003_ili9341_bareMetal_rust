@@ -17,12 +17,12 @@ These are **approximate** sizes for planning; exact `.bss`/stack usage depends o
 
 | Item | Size (approx.) | Location |
 |------|------------------|----------|
-| Tile RGB565 buffer | 40 × 40 × 2 = **3 200 bytes** | `main`: `buf: [u16; TILE_W * TILE_H]` |
+| Glyph DMA buffer | 512 × 2 = **1 024 bytes** | `font`: `GLYPH_BUF` (48 px used per char) |
 | `Tiles::dirty` | **48 bytes** | `[bool; 48]` |
 | `IRQ_COUNTER`, `TE_FLAG` | 5 bytes + alignment | `static mut` in `main` |
 | Stack | Implementation-defined | Calls, locals, semihosting |
 
-**Important:** A **3.2 KiB** tile buffer **alone** exceeds the **2 KiB** RAM declared in `memory.x`. If you target a standard CH32V003 with 2 KiB SRAM, you must **shrink tiles**, **stream fewer lines at a time**, or **use a part / external RAM** consistent with your real hardware. Treat the current tile size as a logical design parameter to reconcile with the actual MCU.
+Tiles are drawn with **DMA solid fill** (`push_solid_tile`) — no 40×40 tile RAM buffer (unlike the earlier polled design).
 
 ## Flash (code size)
 
@@ -36,6 +36,14 @@ llvm-size -A target/riscv32imc-unknown-none-elf/release/ch32v003-ili9341
 ```
 
 (or the GNU `size` / `riscv-none-elf-size` equivalent.)
+
+Python analyzer (flash/RAM vs `memory.x`, RV32IMC disassembly, linker sanity checks):
+
+```bash
+pip install -r tools/requirements.txt
+python tools/ch32v003_elf_analyze.py
+# or: python tools/ch32v003_elf_analyze.py path/to/firmware.elf --no-disasm
+```
 
 Typical sections of interest:
 
@@ -51,4 +59,4 @@ If `llvm-size` reports **no `.text`** or **entry address `0x0`**, the ELF may no
 | Resource | `memory.x` | Watchpoint in code |
 |----------|------------|---------------------|
 | Flash | 16 KiB | Track `.text` + `.rodata` + init `.data` |
-| RAM | 2 KiB | Tile buffer 3.2 KiB — **must align with real part** |
+| RAM | 2 KiB | Glyph buffer ~1 KiB + stack — fits 2 KiB SRAM with margin |
