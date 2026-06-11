@@ -15,7 +15,7 @@
 | `regs` / `rcc` | WCH register map; **48 MHz HSE+PLL** clock init |
 | `hw` | GPIO (board pins), **SPI1 @ 24 MHz**, **DMA1 ch3** TX, **TIM1 CH1 PWM** backlight on **PD2**, delays |
 | `ili9341` | C-style init table, **DMA** `fill_rectangle` / `push_solid_tile`, TE on |
-| `font` | Minimal bitmap text (`draw_char` / `draw_text`) over SPI |
+| `font` | Tilen Majerle bitmap fonts **7×10**, **11×18**, **16×26**; rasterize → DMA |
 
 There is **no** separate board-support package: **`hw::platform_init()`** (called from `ili9341::init`) configures RCC, GPIO, SPI1, and DMA. Backlight comes up at full brightness via **`backlight_on()`** → **TIM1** PWM on **PD2** (~47 kHz; duty **`0..=1023`**, max **1023** — see [hardware.md](hardware.md#backlight-pwm-pd2--tim1_ch1)). **EXTI/NVIC for TE on PD0** is still TODO in the IRQ handler.
 

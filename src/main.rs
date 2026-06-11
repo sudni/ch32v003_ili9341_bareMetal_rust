@@ -47,7 +47,10 @@ fn main() -> ! {
                 }
 
                 if tx_demo_condition() {
-                    font::draw_text(&lcd, "HELLO", 10, 10, 0xFFFF, 0x0000);
+                    font::draw_text(&lcd, &font::FONT_7X10, "HELLO", 10, 10, 0xFFFF, 0x0000);
+                    font::draw_text(&lcd, &font::FONT_11X18, "Rust", 10, 28, 0x07E0, 0x0000);
+                    let x_large = 10 + font::text_width(&font::FONT_11X18, "Rust") + 8;
+                    font::draw_text(&lcd, &font::FONT_16X26, "CH32", x_large, 48, 0xF800, 0x0000);
                 }
             }
         }

@@ -1,62 +1,137 @@
-# RAM and Flash usage
+# RAM and Flash memory map
+
+## CH32V003 (physical)
+
+Per **CH32V003DS0** and `memory.x`:
+
+| Region | Bus address | Size | Role |
+|--------|-------------|------|------|
+| **CodeFlash** | `0x0000_0000` | **16 KiB** | Instructions + constants loaded at reset |
+| **SRAM** | `0x2000_0000` | **2 KiB** | `.data`, `.bss`, stack |
+
+There is no external RAM/flash in this project.
+
+```
+  0x0000_0000  ┌─────────────────────────────┐ 16 KiB
+               │  FLASH (.text, .rodata,      │
+               │          init .data LMA)    │
+  0x0000_4000  └─────────────────────────────┘
+
+  0x2000_0000  ┌─────────────────────────────┐ 2 KiB
+               │  .data (if any)             │
+               │  .bss (static mut, buffers) │
+               │  stack ↓ (grows downward)   │
+  0x2000_0800  └─────────────────────────────┘  ← _stack_start
+```
 
 ## Linker script (`memory.x`)
 
-As checked into this project:
+| Symbol / setting | Value | Meaning |
+|------------------|-------|---------|
+| `FLASH` | `ORIGIN = 0x00000000`, `LENGTH = 16K` | Program storage |
+| `RAM` | `ORIGIN = 0x20000000`, `LENGTH = 2K` | Writable memory |
+| `_stack_start` | `ORIGIN(RAM) + LENGTH(RAM)` = **`0x20000800`** | Initial stack pointer (top of RAM) |
+| `_hart_stack_size` | **512** | Hint for `riscv-rt` (actual `.stack` reservation may differ) |
 
-| Region | Origin | Size |
-|--------|--------|------|
-| **FLASH** | `0x00000000` | **16 KiB** |
-| **RAM** | `0x20000000` | **2 KiB** |
+Section aliases: `.text`/`.rodata` → FLASH; `.data`/`.bss`/`.stack` → RAM.
 
-The script discards `.eh_frame`, `.comment`, and `.riscv.attributes`; it does **not** define stack size or `.bss` placement explicitly—those rely on the linker’s default layout for this target once `-Tmemory.x` is applied.
+Discarded sections: `.eh_frame`, `.comment`, `.riscv.attributes`.
 
-## Major RAM consumers (from source)
+## Flash layout (release build)
 
-These are **approximate** sizes for planning; exact `.bss`/stack usage depends on the linker and optimization level.
+Measured with `python tools/ch32v003_elf_analyze.py` after `cargo build --release`:
 
-| Item | Size (approx.) | Location |
-|------|------------------|----------|
-| Glyph DMA buffer | 512 × 2 = **1 024 bytes** | `font`: `GLYPH_BUF` (48 px used per char) |
-| `Tiles::dirty` | **48 bytes** | `[bool; 48]` |
-| `IRQ_COUNTER`, `TE_FLAG` | 5 bytes + alignment | `static mut` in `main` |
-| Stack | Implementation-defined | Calls, locals, semihosting |
+| Section | Size | Content (main contributors) |
+|---------|------|-------------------------------|
+| **`.text`** | **4.72 KiB** | Rust code, SPI/DMA, TIM1 PWM, init, `riscv-rt` startup |
+| **`.rodata`** | **10.75 KiB** | Font bitmaps (`font/data.rs`: 7×10, 11×18, 16×26) |
+| **`.data` LMA** | 0 | No initialized globals copied to RAM at boot |
+| **Total flash** | **15.47 KiB / 16 KiB (96.7 %)** | ~544 bytes free |
 
-Tiles are drawn with **DMA solid fill** (`push_solid_tile`) — no 40×40 tile RAM buffer (unlike the earlier polled design).
+```
+  0x0000_0000  .text (code)
+       +
+  ~0x0000_12E0  .rodata (fonts ~11 KiB dominate)
+       +
+  0x0000_3E00  ~544 B free
+  0x0000_4000  end of flash
+```
 
-## Flash (code size)
+Entry point: **`0x00000000`** (vector table / reset in flash).
 
-Firmware size depends on optimization (`-C opt-level=z`, LTO, etc. in `Cargo.toml`) and whether **semihosting** is linked for release builds.
+## RAM layout (release build)
 
-To measure after a successful link into normal flash addresses:
+| Section | VMA | Size | Content (main contributors) |
+|---------|-----|------|-------------------------------|
+| **`.data`** | `0x2000_0000` | **0** | — |
+| **`.bss`** | low RAM | **1.01 KiB** | `font::GLYPH_BUF` (1024 B), `Tiles::dirty` (48 B), `TE_FLAG`, `IRQ_COUNTER`, … |
+| **`.stack`** | high RAM | **~1 KiB** | Reserved stack (below `_stack_start`) |
+| **Total RAM** | | **2.00 KiB / 2 KiB (100 %)** | No headroom |
+
+```
+  0x2000_0000  ┌──────────────────┐
+               │  .bss            │  GLYPH_BUF [u16;512] ≈ 1024 B
+               │                  │  Tiles::dirty [bool;48]
+               │                  │  other static mut
+  ~0x2000_0408  ├──────────────────┤
+               │  (unused gap)    │
+  ~0x2000_0400  ├──────────────────┤
+               │  .stack          │  grows down toward .bss
+  0x2000_0800  └──────────────────┘  SP at reset
+```
+
+**Important:** RAM is **fully budgeted**. Adding large buffers (framebuffer, bigger glyph pool, heap) requires shrinking something else or changing hardware.
+
+## Major static objects (source → section)
+
+| Item | Size | Section | File |
+|------|------|---------|------|
+| `GLYPH_BUF` | 512 × 2 = **1024 B** | `.bss` | `font/mod.rs` |
+| Font tables (×3) | **~10.75 KiB** | `.rodata` (flash) | `font/data.rs` |
+| `Tiles::dirty` | **48 B** | `.bss` | `ili9341.rs` |
+| `TE_FLAG`, `IRQ_COUNTER` | few bytes | `.bss` | `main.rs` |
+| Tile draw path | **0 B** tile buffer | — | solid-color DMA fill |
+
+No heap allocator (`no_std`, no `alloc`).
+
+## Startup (conceptual)
+
+1. Reset @ `0x00000000` → `riscv-rt` startup in `.text`.
+2. Copy `.data` LMA → VMA (none today).
+3. Zero `.bss`.
+4. Set `sp = _stack_start` (`0x20000800`).
+5. Call `main`.
+
+## How to measure
 
 ```bash
 cargo build --release
+python tools/ch32v003_elf_analyze.py
+```
+
+Optional:
+
+```bash
 llvm-size -A target/riscv32imc-unknown-none-elf/release/ch32v003-ili9341
 ```
 
-(or the GNU `size` / `riscv-none-elf-size` equivalent.)
+Sections of interest:
 
-Python analyzer (flash/RAM vs `memory.x`, RV32IMC disassembly, linker sanity checks):
+- **`.text`** — code (flash)
+- **`.rodata`** — constants (flash)
+- **`.data`** — initialized RAM (flash LMA + RAM VMA)
+- **`.bss`** — zero-init RAM
+- **`.stack`** — stack reservation in RAM
 
-```bash
-pip install -r tools/requirements.txt
-python tools/ch32v003_elf_analyze.py
-# or: python tools/ch32v003_elf_analyze.py path/to/firmware.elf --no-disasm
-```
+If `.text` is missing or entry is wrong, linker/`memory.x` is not applied correctly.
 
-Typical sections of interest:
+## Design limits vs. current firmware
 
-- **`.text`** — program code in flash  
-- **`.rodata`** — constants  
-- **`.data`** — initialized globals (stored in flash, copied to RAM at startup)  
-- **`.bss`** — zero-initialized RAM  
+| Resource | Hardware / `memory.x` | Current release | Margin |
+|----------|------------------------|-----------------|--------|
+| Flash | 16 KiB | 15.47 KiB | **~544 B** — fonts dominate; shrink fonts or drop a size to add code |
+| RAM | 2 KiB | 2.00 KiB | **0 B** — `GLYPH_BUF` + stack use almost all SRAM |
 
-If `llvm-size` reports **no `.text`** or **entry address `0x0`**, the ELF may not be fully linked for embedded; fix linker flags / `memory.x` / scatter file until load segments map into `0x00000000` flash.
+To free RAM: smaller `GLYPH_BUF` (if max font glyph fits), lower `_hart_stack_size` / stack usage, or reuse one buffer for tiles + glyphs (not concurrent).
 
-## Summary table (design limits vs. source)
-
-| Resource | `memory.x` | Watchpoint in code |
-|----------|------------|---------------------|
-| Flash | 16 KiB | Track `.text` + `.rodata` + init `.data` |
-| RAM | 2 KiB | Glyph buffer ~1 KiB + stack — fits 2 KiB SRAM with margin |
+To free flash: drop `FONT_16X26` or `FONT_11X18`, or use a compact 6×8 font only.
